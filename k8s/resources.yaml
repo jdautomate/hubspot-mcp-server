@@ -1,0 +1,194 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    kubernetes.io/metadata.name: hubspot-mcp
+    task-group: website
+  name: hubspot-mcp
+spec:
+  finalizers:
+  - kubernetes
+status:
+  phase: Active
+
+---
+# Secret for HubSpot API Key
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: hubspot-mcp
+  namespace: hubspot-mcp
+spec:
+  data:
+  - remoteRef:
+      conversionStrategy: Default
+      decodingStrategy: None
+      key: www/hubspot-mcp
+      metadataPolicy: None
+      property: HUBSPOT_API_KEY
+    secretKey: HUBSPOT_API_KEY
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: saas-secretstore
+  target:
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    name: hubspot-mcp
+
+---
+# ConfigMap for additional configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hubspot-mcp-config
+  namespace: hubspot-mcp
+data:
+  LOG_LEVEL: "info"
+  NODE_ENV: "production"
+
+---
+# Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hubspot-mcp-server
+  namespace: hubspot-mcp
+  labels:
+    app: hubspot-mcp-server
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hubspot-mcp-server
+  template:
+    metadata:
+      labels:
+        app: hubspot-mcp-server
+        version: v1
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: hubspot-mcp
+        image: 543714519113.dkr.ecr.us-west-1.amazonaws.com/hubspot-mcp:latest
+        imagePullPolicy: Always
+        command: ["npm", "run", "start"]
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+        env:
+        - name: HUBSPOT_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: hubspot-mcp
+              key: HUBSPOT_API_KEY
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: hubspot-mcp-config
+              key: LOG_LEVEL
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: hubspot-mcp-config
+              key: NODE_ENV
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - node
+            - -e
+            - "console.log('healthy')"
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - node
+            - -e
+            - "console.log('ready')"
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1001
+          capabilities:
+            drop:
+            - ALL
+
+---
+# Service (if you need to expose it)
+apiVersion: v1
+kind: Service
+metadata:
+  name: hubspot-mcp-service
+  namespace: hubspot-mcp
+  labels:
+    app: hubspot-mcp-server
+spec:
+  type: ClusterIP
+  selector:
+    app: hubspot-mcp-server
+  ports:
+  - port: 3000
+    targetPort: 3000
+    protocol: TCP
+    name: http
+
+---
+# Horizontal Pod Autoscaler
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: hubspot-mcp-hpa
+#   namespace: default
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: hubspot-mcp-server
+#   minReplicas: 2
+#   maxReplicas: 10
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: 70
+#   - type: Resource
+#     resource:
+#       name: memory
+#       target:
+#         type: Utilization
+#         averageUtilization: 80
+
+---
+# PodDisruptionBudget for high availability
+# apiVersion: policy/v1
+# kind: PodDisruptionBudget
+# metadata:
+#   name: hubspot-mcp-pdb
+#   namespace: default
+# spec:
+#   minAvailable: 1
+#   selector:
+#     matchLabels:
+#       app: hubspot-mcp-server
